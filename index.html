@@ -1,0 +1,785 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8" />
+<title>Abgleich — wie ähnlich zwei Folgen sind</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="description" content="Needleman-Wunsch und Smith-Waterman zum Zusehen: die Matrix füllt sich, der Rückweg zeigt die Ausrichtung — für Erbgut und für Text derselbe Algorithmus, geprüft gegen die erschöpfende Aufzählung aller Ausrichtungen." />
+
+<style>
+  :root {
+    --grund: #EEEFEC;
+    --feld:  #F9FAF8;
+    --tief:  #E2E4DF;
+    --linie: #C6C9C1;
+    --tinte: #161A15;
+    --leise: #61675E;
+    --netz:  #B3B7AC;
+    --treffer: #2E6B4E;
+    --fehl:    #A8471F;
+    --luecke:  #7A4E9A;
+    --weg:     #1F5FA8;
+    --gut:     #2C7A34;
+    --warn:    #A32C22;
+    --schatten: 0 1px 0 rgba(22,26,21,.05), 0 10px 24px -16px rgba(22,26,21,.45);
+    --f-fest: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, "DejaVu Sans Mono", monospace;
+    --f-text: -apple-system, "Segoe UI Variable Text", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --grund: #111310; --feld: #181A17; --tief: #0B0D0A; --linie: #2C302A;
+      --tinte: #E5E8E2; --leise: #8C938A; --netz: #383D36;
+      --treffer: #58A87E; --fehl: #E0785C; --luecke: #B48ADA; --weg: #6CA8E8;
+      --gut: #7FBF6A; --warn: #E0776B;
+      --schatten: 0 1px 0 rgba(255,255,255,.03), 0 12px 30px -18px #000;
+    }
+  }
+  :root[data-theme="dark"] {
+    --grund: #111310; --feld: #181A17; --tief: #0B0D0A; --linie: #2C302A;
+    --tinte: #E5E8E2; --leise: #8C938A; --netz: #383D36;
+    --treffer: #58A87E; --fehl: #E0785C; --luecke: #B48ADA; --weg: #6CA8E8;
+    --gut: #7FBF6A; --warn: #E0776B;
+    --schatten: 0 1px 0 rgba(255,255,255,.03), 0 12px 30px -18px #000;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--grund); color:var(--tinte);
+    font-family:var(--f-text); font-size:15px; line-height:1.55; -webkit-font-smoothing:antialiased; }
+  .blatt { max-width:1160px; margin:0 auto;
+    padding: clamp(20px,4vw,44px) clamp(14px,3vw,28px) 64px;
+    display:flex; flex-direction:column; gap:18px; }
+
+  .marke { font-family:var(--f-fest); font-size:10px; letter-spacing:.2em; text-transform:uppercase;
+    color:var(--leise); display:flex; gap:12px; align-items:center; margin:0; }
+  .marke::after { content:""; flex:1; height:1px; background:var(--linie); }
+  h1 { font-family:var(--f-fest); font-weight:700; font-size:clamp(24px,4.2vw,40px);
+    line-height:1.06; letter-spacing:-.03em; margin:0; text-wrap:balance; }
+  h1 span { color:var(--treffer); }
+  .vorspann { max-width:70ch; color:var(--leise); margin:0; }
+  .vorspann b { color:var(--tinte); font-weight:600; }
+
+  .leiste { display:flex; gap:8px; flex-wrap:wrap; align-items:center;
+    background:var(--feld); border:1px solid var(--linie); padding:9px 11px; box-shadow:var(--schatten); }
+  .kl { font-family:var(--f-fest); font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--leise); }
+  button, select, input, textarea { font-family:var(--f-fest); font-size:12px; color:var(--tinte);
+    background:var(--grund); border:1px solid var(--linie); border-radius:0; padding:6px 10px; letter-spacing:.03em; }
+  button, select { cursor:pointer; }
+  button:hover, select:hover { border-color:var(--weg); }
+  button:active { background:var(--tief); }
+  button.haupt { background:var(--weg); border-color:var(--weg); color:var(--feld); }
+  button[aria-pressed="true"] { background:var(--tief); border-color:var(--weg); }
+  input[type=range] { padding:0; background:none; border:none; accent-color:var(--weg); vertical-align:middle; }
+  :focus-visible { outline:2px solid var(--weg); outline-offset:2px; }
+
+  .kasten { background:var(--feld); border:1px solid var(--linie); box-shadow:var(--schatten);
+    display:flex; flex-direction:column; min-width:0; }
+  .kasten-kopf { display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+    padding:8px 11px; border-bottom:1px solid var(--linie); }
+  .kasten-leib { padding:11px; display:flex; flex-direction:column; gap:10px; min-width:0; }
+  .buehne { display:grid; grid-template-columns: minmax(0,1fr) 320px; gap:18px; align-items:start; }
+  @media (max-width: 900px) { .buehne { grid-template-columns: minmax(0,1fr); } }
+  .saeule { display:flex; flex-direction:column; gap:18px; min-width:0; }
+
+  canvas { width:100%; height:auto; display:block; background:var(--tief); border:1px solid var(--linie); }
+  textarea { width:100%; min-height:64px; }
+
+  .ausrichtung { font-family:var(--f-fest); font-size:14px; line-height:1.75; overflow-x:auto;
+    background:var(--tief); border:1px solid var(--linie); padding:10px; white-space:pre; }
+  .ausrichtung .t { color:var(--treffer); font-weight:700; }
+  .ausrichtung .f { color:var(--fehl); }
+  .ausrichtung .l { color:var(--luecke); }
+
+  .werte { display:grid; grid-template-columns:repeat(auto-fit,minmax(118px,1fr)); gap:1px;
+    background:var(--linie); border:1px solid var(--linie); }
+  .wert { background:var(--feld); padding:7px 9px; min-width:0; }
+  .wert .l { font-family:var(--f-fest); font-size:9.5px; letter-spacing:.13em; text-transform:uppercase; color:var(--leise); }
+  .wert .n { font-family:var(--f-fest); font-size:16px; font-variant-numeric:tabular-nums; }
+  .wert .n.treffer { color:var(--treffer); } .wert .n.fehl { color:var(--fehl); }
+  .wert .n.luecke { color:var(--luecke); }
+
+  table.liste { border-collapse:collapse; width:100%; font-family:var(--f-fest); font-size:12px; }
+  table.liste th, table.liste td { border-bottom:1px solid var(--linie); padding:4px 7px; text-align:left; }
+  table.liste th { color:var(--leise); font-weight:400; font-size:10px; letter-spacing:.1em; text-transform:uppercase; }
+  table.liste td.z { text-align:right; font-variant-numeric:tabular-nums; }
+  .gutt { color:var(--gut); } .schlecht { color:var(--warn); }
+
+  .hinweis { font-family:var(--f-fest); font-size:12px; color:var(--leise); letter-spacing:0; margin:0; }
+  .hinweis b { color:var(--tinte); font-weight:600; }
+  .strich { display:inline-block; width:14px; height:3px; vertical-align:3px; margin-right:5px; }
+
+  .noten { display:grid; grid-template-columns:repeat(auto-fit,minmax(270px,1fr)); gap:18px; margin-top:6px; }
+  .noten section { background:var(--feld); border:1px solid var(--linie); padding:12px 14px; box-shadow:var(--schatten); }
+  .noten h3 { font-family:var(--f-fest); font-size:11px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--leise); margin:0 0 6px; font-weight:400; }
+  .noten p { margin:0; font-size:14px; }
+  code { font-family:var(--f-fest); font-size:12.5px; background:var(--tief); padding:1px 4px; }
+  .fuss { color:var(--leise); font-size:13px; border-top:1px solid var(--linie); padding-top:12px; }
+  .fuss a { color:var(--weg); }
+</style>
+</head>
+<body>
+<main class="blatt">
+
+  <p class="marke">Blatt · Leben</p>
+  <h1>Abgleich — wie <span>ähnlich</span> zwei Folgen sind</h1>
+  <p class="vorspann">
+    Zwei Erbgutstücke, zwei Fassungen einer Datei, zwei Wörter mit Tippfehler — die Frage ist
+    immer dieselbe: <b>welche Teile entsprechen einander, und wo ist etwas eingefügt oder
+    verschwunden?</b> Die Antwort kommt seit 1970 aus derselben Matrix. Sie füllt sich Feld für
+    Feld, und der Rückweg durch sie ist die beste Ausrichtung — von der man beweisen kann, dass
+    keine bessere existiert.
+  </p>
+
+  <div class="leiste">
+    <span class="kl">Beispiel</span>
+    <select id="beispiel" aria-label="Beispiel"></select>
+    <span class="kl" style="margin-left:4px">Art</span>
+    <select id="art" aria-label="Art des Abgleichs">
+      <option value="global">durchgehend (Needleman-Wunsch)</option>
+      <option value="lokal">stückweise (Smith-Waterman)</option>
+    </select>
+    <span class="kl" style="margin-left:4px">Treffer</span>
+    <input type="range" id="treffer" min="1" max="5" value="2" style="width:60px" aria-label="Punkte für Treffer" />
+    <span class="kl" style="margin-left:4px">Fehlpaarung</span>
+    <input type="range" id="fehl" min="-5" max="0" value="-1" style="width:60px" aria-label="Punkte für Fehlpaarung" />
+    <span class="kl" style="margin-left:4px">Lücke</span>
+    <input type="range" id="luecke" min="-5" max="-1" value="-2" style="width:60px" aria-label="Punkte für Lücke" />
+    <span style="flex:1"></span>
+    <button id="b-thema">Ansicht</button>
+  </div>
+
+  <div class="buehne">
+    <div class="saeule">
+      <div class="kasten">
+        <div class="kasten-kopf">
+          <span class="kl">Die Matrix</span>
+          <span class="kl" id="matrix-lage" style="margin-left:auto"></span>
+        </div>
+        <div class="kasten-leib">
+          <canvas id="matrix" width="1000" height="620" aria-label="Punktematrix mit Rückweg"></canvas>
+          <p class="hinweis">
+            Jedes Feld enthält die beste erreichbare Punktzahl bis dorthin. Es entsteht aus genau
+            drei Möglichkeiten: <b>schräg</b> (beide Zeichen paaren), <b>nach unten</b> oder
+            <b>nach rechts</b> (eine Lücke). Der eingezeichnete Weg ist der Rückweg vom Ende —
+            und weil jedes Feld sein Maximum kennt, ist er beweisbar der beste.
+          </p>
+        </div>
+      </div>
+
+      <div class="kasten">
+        <div class="kasten-kopf">
+          <span class="kl">Die Ausrichtung</span>
+          <span class="kl" id="aus-lage" style="margin-left:auto"></span>
+        </div>
+        <div class="kasten-leib">
+          <div class="ausrichtung" id="ausrichtung"></div>
+          <p class="hinweis">
+            <span class="strich" style="background:var(--treffer)"></span>gleich ·
+            <span class="strich" style="background:var(--fehl)"></span>verschieden ·
+            <span class="strich" style="background:var(--luecke)"></span>Lücke (eingefügt oder verloren)
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div class="saeule">
+      <div class="kasten">
+        <div class="kasten-kopf"><span class="kl">Die beiden Folgen</span></div>
+        <div class="kasten-leib">
+          <textarea id="folge-a" spellcheck="false" aria-label="erste Folge"></textarea>
+          <textarea id="folge-b" spellcheck="false" aria-label="zweite Folge"></textarea>
+          <p class="hinweis" id="folgen-fuss"></p>
+        </div>
+      </div>
+
+      <div class="kasten">
+        <div class="kasten-kopf"><span class="kl">Gemessen</span></div>
+        <div class="kasten-leib">
+          <div class="werte">
+            <div class="wert"><div class="l">Punkte</div><div class="n" id="w-punkte">—</div></div>
+            <div class="wert"><div class="l">Übereinstimmung</div><div class="n treffer" id="w-identitaet">—</div></div>
+            <div class="wert"><div class="l">Treffer</div><div class="n treffer" id="w-treffer">—</div></div>
+            <div class="wert"><div class="l">Fehlpaarungen</div><div class="n fehl" id="w-fehl">—</div></div>
+            <div class="wert"><div class="l">Lücken</div><div class="n luecke" id="w-luecken">—</div></div>
+            <div class="wert"><div class="l">Änderungsabstand</div><div class="n" id="w-abstand">—</div></div>
+          </div>
+          <p class="hinweis" id="mess-fuss"></p>
+        </div>
+      </div>
+
+      <div class="kasten">
+        <div class="kasten-kopf"><span class="kl">Aufwand</span></div>
+        <div class="kasten-leib">
+          <table class="liste" id="aufwand"><tbody></tbody></table>
+          <p class="hinweis">
+            Die Matrix hat so viele Felder, wie die beiden Folgen Zeichen haben — mal genommen.
+            Für zwei Erbgutstücke von je 3 Milliarden Zeichen wären das 9·10¹⁸ Felder; deshalb
+            benutzt niemand dieses Verfahren für ganze Genome, sondern nur für Ausschnitte.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="kasten">
+    <div class="kasten-kopf">
+      <span class="kl">Beweis statt Behauptung</span>
+      <button id="b-pruefen" class="haupt" style="margin-left:auto">Prüfen</button>
+    </div>
+    <div class="kasten-leib">
+      <p class="hinweis">
+        Die Matrix behauptet, die <b>beste</b> Ausrichtung zu finden. Das lässt sich nachprüfen,
+        indem man für kurze Folgen <b>alle</b> Ausrichtungen aufzählt — bei zwei Folgen von je
+        sechs Zeichen sind das 8989 Möglichkeiten — und das Maximum vergleicht. Dazu die
+        Eigenschaften, die eine Ähnlichkeit haben muss: Symmetrie, Selbstvergleich, Dreiecks­-
+        ungleichung des Änderungsabstands, und ein zweiter, unabhängig geschriebener Rechenweg.
+      </p>
+      <table class="liste" id="pruef"><tbody></tbody></table>
+      <p class="hinweis" id="pruef-fuss">noch nicht geprüft</p>
+    </div>
+  </div>
+
+  <div class="noten">
+    <section>
+      <h3>Warum Lücken teuer sind</h3>
+      <p>
+        Ohne Strafe für Lücken wäre jede Folge zu jeder ähnlich: man schiebt einfach überall
+        Löcher ein, bis die gleichen Zeichen übereinanderstehen. Die Lückenstrafe entscheidet
+        also, was „ähnlich" überhaupt heißt. In der Biologie kostet das <b>Öffnen</b> einer Lücke
+        viel und das <b>Verlängern</b> wenig — eine Einfügung von zehn Bausteinen ist ein
+        Ereignis, nicht zehn.
+      </p>
+    </section>
+    <section>
+      <h3>Derselbe Algorithmus als diff</h3>
+      <p>
+        Nimmt man statt Buchstaben ganze <b>Zeilen</b> als Zeichen, ist dieselbe Matrix das
+        Werkzeug, das jeder Programmierer täglich benutzt: <code>diff</code>. Der Rückweg heißt
+        dann „hinzugefügt" und „entfernt". Im Beispiel oben lässt sich das umschalten.
+      </p>
+    </section>
+    <section>
+      <h3>Durchgehend oder stückweise</h3>
+      <p>
+        Needleman-Wunsch richtet die Folgen <b>vollständig</b> aneinander aus — passend, wenn beide
+        ungefähr gleich lang und verwandt sind. Smith-Waterman sucht das <b>ähnlichste Stück</b>
+        und lässt den Rest weg; genau das braucht man, wenn ein kurzes Erbgutstück irgendwo in
+        einem langen gesucht wird. Der Unterschied ist eine einzige Zeile: negative Werte werden
+        auf null gesetzt.
+      </p>
+    </section>
+  </div>
+
+  <p class="fuss">
+    Eine einzelne HTML-Datei. Kein Build, keine Bibliothek, nichts verlässt den Browser.
+    <span style="display:block;margin-top:8px">
+      Alle Blätter: <a href="https://ssims437.github.io/">ssims437.github.io</a>
+    </span>
+  </p>
+
+</main>
+
+<script>
+(function () {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+
+  /* ==========================================================================
+     DIE MATRIX
+     m[i][j] ist die beste Punktzahl für die ersten i Zeichen der einen und die
+     ersten j der anderen Folge. Jedes Feld kennt genau drei Vorgänger.
+     ========================================================================== */
+  function rechnen(a, b, punkte, lokal) {
+    const n = a.length, m = b.length;
+    const M = Array.from({ length: n + 1 }, () => new Float64Array(m + 1));
+    const woher = Array.from({ length: n + 1 }, () => new Int8Array(m + 1));
+    // 0 = Anfang, 1 = schräg, 2 = von oben (Lücke in b), 3 = von links (Lücke in a)
+    for (let i = 1; i <= n; i++) { M[i][0] = lokal ? 0 : i * punkte.luecke; woher[i][0] = lokal ? 0 : 2; }
+    for (let j = 1; j <= m; j++) { M[0][j] = lokal ? 0 : j * punkte.luecke; woher[0][j] = lokal ? 0 : 3; }
+
+    let bestI = 0, bestJ = 0, bestWert = lokal ? 0 : -Infinity;
+    for (let i = 1; i <= n; i++) {
+      for (let j = 1; j <= m; j++) {
+        const gleich = a[i - 1] === b[j - 1];
+        const schraeg = M[i - 1][j - 1] + (gleich ? punkte.treffer : punkte.fehl);
+        const oben = M[i - 1][j] + punkte.luecke;
+        const links = M[i][j - 1] + punkte.luecke;
+        let wert = schraeg, richtung = 1;
+        if (oben > wert) { wert = oben; richtung = 2; }
+        if (links > wert) { wert = links; richtung = 3; }
+        if (lokal && wert < 0) { wert = 0; richtung = 0; }
+        M[i][j] = wert; woher[i][j] = richtung;
+        if (wert > bestWert) { bestWert = wert; bestI = i; bestJ = j; }
+      }
+    }
+    if (!lokal) { bestI = n; bestJ = m; bestWert = M[n][m]; }
+    return { M, woher, bestI, bestJ, punktzahl: bestWert };
+  }
+
+  /* Der Rückweg: vom besten Feld aus rückwärts, bis der Anfang erreicht ist. */
+  function rueckweg(a, b, erg, lokal) {
+    const links = [], rechts = [], weg = [];
+    let i = erg.bestI, j = erg.bestJ;
+    while (i > 0 || j > 0) {
+      weg.push([i, j]);
+      const r = erg.woher[i][j];
+      if (lokal && erg.M[i][j] === 0) break;
+      if (r === 1 || (i > 0 && j > 0 && r === 0 && !lokal)) {
+        links.unshift(a[i - 1]); rechts.unshift(b[j - 1]); i--; j--;
+      } else if (r === 2) { links.unshift(a[i - 1]); rechts.unshift(null); i--; }
+      else if (r === 3) { links.unshift(null); rechts.unshift(b[j - 1]); j--; }
+      else break;
+    }
+    weg.push([i, j]);
+    return { links, rechts, weg: weg.reverse() };
+  }
+
+  /* Die Punktzahl einer fertigen Ausrichtung nachrechnen — unabhängig von der
+     Matrix. Nur wenn beide übereinstimmen, war der Rückweg richtig. */
+  function nachrechnen(links, rechts, punkte) {
+    let summe = 0;
+    for (let k = 0; k < links.length; k++) {
+      if (links[k] === null || rechts[k] === null) summe += punkte.luecke;
+      else summe += links[k] === rechts[k] ? punkte.treffer : punkte.fehl;
+    }
+    return summe;
+  }
+
+  /* Der Änderungsabstand (Levenshtein) — zweiter, völlig eigener Rechenweg.
+     Er zählt Schritte statt Punkte und dient im Prüflauf als Gegenprobe. */
+  function aenderungsabstand(a, b) {
+    const n = a.length, m = b.length;
+    let vorher = new Int32Array(m + 1);
+    let jetzt = new Int32Array(m + 1);
+    for (let j = 0; j <= m; j++) vorher[j] = j;
+    for (let i = 1; i <= n; i++) {
+      jetzt[0] = i;
+      for (let j = 1; j <= m; j++) {
+        const kosten = a[i - 1] === b[j - 1] ? 0 : 1;
+        jetzt[j] = Math.min(vorher[j] + 1, jetzt[j - 1] + 1, vorher[j - 1] + kosten);
+      }
+      [vorher, jetzt] = [jetzt, vorher];
+    }
+    return vorher[m];
+  }
+
+  /* ==========================================================================
+     BEISPIELE
+     ========================================================================== */
+  const BEISPIELE = {
+    erbgut: { name: "Erbgut (Buchstaben)", art: "zeichen",
+      a: "GATTACAGGCTA", b: "GCATGCAGGCA",
+      text: "Zwei kurze Erbgutstücke. Jedes Zeichen ist ein Baustein — A, C, G oder T." },
+    verwandt: { name: "Verwandte Stücke", art: "zeichen",
+      a: "ACGTACGTACGTTTGACA", b: "ACGTTCGTACGTTTGGCA",
+      text: "Zwei Stücke mit wenigen Unterschieden — so sieht Verwandtschaft aus." },
+    fremd: { name: "Nicht verwandt", art: "zeichen",
+      a: "AAAAACCCCCGGGGG", b: "TTTGGGTTTAAATTT",
+      text: "Zwei Stücke ohne gemeinsame Geschichte. Auch hier findet das Verfahren eine beste " +
+            "Ausrichtung — sie ist nur nichts wert. Die Punktzahl sagt, ob sich das Ergebnis lohnt." },
+    tippfehler: { name: "Tippfehler", art: "zeichen",
+      a: "Silbentrennung", b: "Silbentrenung",
+      text: "Ein fehlender Buchstabe. Der Änderungsabstand ist genau die Zahl der Tastendrücke, " +
+            "die von einem Wort zum anderen führen." },
+    zeilen: { name: "Zwei Fassungen eines Texts (diff)", art: "woerter",
+      a: "der schnelle braune Fuchs springt über den faulen Hund",
+      b: "der schnelle rote Fuchs springt heute über den Hund",
+      text: "Statt Buchstaben werden hier ganze Wörter verglichen — dieselbe Matrix, und heraus " +
+            "kommt genau das, was diff anzeigt." }
+  };
+
+  let BEISPIEL = "erbgut", ART = "global";
+  let PUNKTE = { treffer: 2, fehl: -1, luecke: -2 };
+
+  const zerlegen = (text, art) => art === "woerter"
+    ? text.trim().split(/\s+/).filter(Boolean)
+    : text.trim().replace(/\s+/g, "").split("");
+
+  function folgen() {
+    const art = BEISPIELE[BEISPIEL].art;
+    return { a: zerlegen($("folge-a").value, art), b: zerlegen($("folge-b").value, art), art };
+  }
+
+  /* ==========================================================================
+     ZEICHNEN
+     ========================================================================== */
+  const farbe = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+  function matrixZeichnen(a, b, erg, weg, lokal) {
+    const c = $("matrix"), g = c.getContext("2d");
+    const n = a.length, m = b.length;
+    const rand = 34;
+    const zelle = Math.max(9, Math.min(38, Math.floor((c.width - 2 * rand) / (m + 1))));
+    const hoehe = Math.min(1000, rand * 2 + (n + 1) * zelle);
+    if (c.height !== hoehe) c.height = hoehe;
+    g.fillStyle = farbe("--tief"); g.fillRect(0, 0, c.width, c.height);
+
+    let min = Infinity, max = -Infinity;
+    for (let i = 0; i <= n; i++) for (let j = 0; j <= m; j++) {
+      min = Math.min(min, erg.M[i][j]); max = Math.max(max, erg.M[i][j]);
+    }
+    const spanne = Math.max(1e-9, max - min);
+
+    for (let i = 0; i <= n; i++) {
+      for (let j = 0; j <= m; j++) {
+        const x = rand + j * zelle, y = rand + i * zelle;
+        const t = (erg.M[i][j] - min) / spanne;
+        g.fillStyle = farbe("--treffer") + Math.round(20 + t * 150).toString(16).padStart(2, "0");
+        g.fillRect(x, y, zelle - 1, zelle - 1);
+        if (zelle >= 20) {
+          g.fillStyle = farbe("--tinte");
+          g.font = `${Math.min(11, zelle * 0.42)}px ui-monospace, monospace`;
+          g.textAlign = "center"; g.textBaseline = "middle";
+          g.globalAlpha = .75;
+          g.fillText(String(erg.M[i][j]), x + zelle / 2, y + zelle / 2);
+          g.globalAlpha = 1;
+        }
+      }
+    }
+
+    // Beschriftung
+    g.fillStyle = farbe("--leise");
+    g.font = `${Math.min(12, zelle * 0.5)}px ui-monospace, monospace`;
+    g.textAlign = "center"; g.textBaseline = "middle";
+    for (let j = 0; j < m; j++) {
+      const s = String(b[j]);
+      g.fillText(s.length > 3 ? s.slice(0, 3) : s, rand + (j + 1) * zelle + zelle / 2, rand - 12);
+    }
+    g.textAlign = "right";
+    for (let i = 0; i < n; i++) {
+      const s = String(a[i]);
+      g.fillText(s.length > 4 ? s.slice(0, 4) : s, rand - 6, rand + (i + 1) * zelle + zelle / 2);
+    }
+
+    // der Rückweg
+    g.strokeStyle = farbe("--weg"); g.lineWidth = Math.max(1.6, zelle * 0.12);
+    g.lineJoin = "round"; g.lineCap = "round";
+    g.beginPath();
+    weg.forEach(([i, j], k) => {
+      const x = rand + j * zelle + zelle / 2, y = rand + i * zelle + zelle / 2;
+      k ? g.lineTo(x, y) : g.moveTo(x, y);
+    });
+    g.stroke();
+    // Endpunkt
+    if (weg.length) {
+      const [i, j] = weg[weg.length - 1];
+      g.fillStyle = farbe("--weg");
+      g.beginPath();
+      g.arc(rand + j * zelle + zelle / 2, rand + i * zelle + zelle / 2, Math.max(3, zelle * 0.18), 0, 7);
+      g.fill();
+    }
+
+    $("matrix-lage").textContent =
+      `${n + 1} × ${m + 1} = ${((n + 1) * (m + 1)).toLocaleString("de-AT")} Felder · ` +
+      `${lokal ? "stückweise" : "durchgehend"} · beste Punktzahl ${erg.punktzahl}`;
+  }
+
+  function ausrichtungZeigen(links, rechts, art) {
+    const ziel = $("ausrichtung");
+    const trenn = art === "woerter" ? " " : "";
+    const zeile1 = [], zeile2 = [], zeile3 = [];
+    for (let k = 0; k < links.length; k++) {
+      const l = links[k], r = rechts[k];
+      const breite = Math.max(String(l ?? "").length, String(r ?? "").length, 1);
+      const fuell = (s) => String(s ?? "·").padEnd(breite, " ");
+      let klasse = "t";
+      if (l === null || r === null) klasse = "l";
+      else if (l !== r) klasse = "f";
+      zeile1.push(`<span class="${klasse}">${fuell(l)}</span>`);
+      zeile2.push(`<span class="${klasse}">${(l !== null && r !== null && l === r ? "|" : (l === null || r === null ? " " : "×")).padEnd(breite, " ")}</span>`);
+      zeile3.push(`<span class="${klasse}">${fuell(r)}</span>`);
+    }
+    ziel.innerHTML = zeile1.join(trenn) + "\n" + zeile2.join(trenn) + "\n" + zeile3.join(trenn);
+  }
+
+  function alles() {
+    ART = $("art").value;
+    PUNKTE = { treffer: +$("treffer").value, fehl: +$("fehl").value, luecke: +$("luecke").value };
+    const { a, b, art } = folgen();
+    if (!a.length || !b.length) { $("ausrichtung").textContent = "beide Folgen brauchen Inhalt"; return; }
+    const lokal = ART === "lokal";
+    const erg = rechnen(a, b, PUNKTE, lokal);
+    const rw = rueckweg(a, b, erg, lokal);
+    matrixZeichnen(a, b, erg, rw.weg, lokal);
+    ausrichtungZeigen(rw.links, rw.rechts, art);
+
+    let treffer = 0, fehl = 0, luecken = 0;
+    for (let k = 0; k < rw.links.length; k++) {
+      const l = rw.links[k], r = rw.rechts[k];
+      if (l === null || r === null) luecken++;
+      else if (l === r) treffer++;
+      else fehl++;
+    }
+    const laenge = rw.links.length || 1;
+    const abstand = aenderungsabstand(a, b);
+    $("w-punkte").textContent = erg.punktzahl;
+    $("w-identitaet").textContent = (treffer / laenge * 100).toFixed(0) + " %";
+    $("w-treffer").textContent = treffer;
+    $("w-fehl").textContent = fehl;
+    $("w-luecken").textContent = luecken;
+    $("w-abstand").textContent = abstand;
+    $("aus-lage").textContent = `${laenge} Spalten · ${treffer} Treffer · ${fehl} Fehlpaarungen · ${luecken} Lücken`;
+    $("folgen-fuss").innerHTML = BEISPIELE[BEISPIEL].text;
+    $("mess-fuss").innerHTML =
+      `Der <b>Änderungsabstand</b> zählt, wie viele einzelne Einfügungen, Löschungen und ` +
+      `Ersetzungen nötig sind, um aus der einen Folge die andere zu machen — hier <b>${abstand}</b>. ` +
+      `Er wird auf einem zweiten, unabhängigen Weg gerechnet und dient im Prüflauf als Gegenprobe.`;
+
+    const tb = $("aufwand").querySelector("tbody");
+    tb.textContent = "";
+    const felder = (a.length + 1) * (b.length + 1);
+    for (const [was, wert] of [
+      ["Zeichen in A", a.length], ["Zeichen in B", b.length],
+      ["Felder in der Matrix", felder.toLocaleString("de-AT")],
+      ["Ausrichtungen insgesamt", ausrichtungenZahl(Math.min(a.length, 9), Math.min(b.length, 9)).toLocaleString("de-AT") +
+        (a.length > 9 || b.length > 9 ? " (für 9×9)" : "")]
+    ]) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td style="color:var(--leise)">${was}</td><td class="z">${wert}</td>`;
+      tb.append(tr);
+    }
+  }
+
+  /* Wie viele Ausrichtungen es überhaupt gibt (Delannoy-Zahlen) — die Größe,
+     gegen die sich die Matrix behaupten muss. */
+  function ausrichtungenZahl(n, m) {
+    const D = Array.from({ length: n + 1 }, () => new Float64Array(m + 1));
+    for (let i = 0; i <= n; i++) D[i][0] = 1;
+    for (let j = 0; j <= m; j++) D[0][j] = 1;
+    for (let i = 1; i <= n; i++) for (let j = 1; j <= m; j++)
+      D[i][j] = D[i - 1][j] + D[i][j - 1] + D[i - 1][j - 1];
+    return D[n][m];
+  }
+
+  /* ==========================================================================
+     PRÜFLAUF
+     ========================================================================== */
+  function wuerfel(saat) {
+    let a = saat >>> 0;
+    return function () {
+      a = (a + 0x6D2B79F5) >>> 0;
+      let t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  const zufallsfolge = (z, laenge, alphabet) =>
+    Array.from({ length: laenge }, () => alphabet[Math.floor(z() * alphabet.length)]);
+
+  /* Alle Ausrichtungen aufzählen: an jeder Stelle drei Möglichkeiten, bis beide
+     Folgen aufgebraucht sind. Nur für kurze Folgen bezahlbar — dafür ohne jeden
+     Zweifel. */
+  function besteDurchAufzaehlen(a, b, punkte) {
+    let bestes = -Infinity, gezaehlt = 0;
+    (function weiter(i, j, summe) {
+      if (i === a.length && j === b.length) { gezaehlt++; bestes = Math.max(bestes, summe); return; }
+      if (i < a.length && j < b.length)
+        weiter(i + 1, j + 1, summe + (a[i] === b[j] ? punkte.treffer : punkte.fehl));
+      if (i < a.length) weiter(i + 1, j, summe + punkte.luecke);
+      if (j < b.length) weiter(i, j + 1, summe + punkte.luecke);
+    })(0, 0, 0);
+    return { bestes, gezaehlt };
+  }
+
+  function pruefen() {
+    const tb = $("pruef").querySelector("tbody");
+    tb.textContent = "";
+    let fehler = 0;
+    const zeile = (was, gut, text) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${was}</td><td style="color:${gut ? "var(--gut)" : "var(--warn)"}">${text}</td>`;
+      tb.append(tr);
+      if (!gut) fehler++;
+    };
+    const t0 = performance.now();
+    const ACGT = ["A", "C", "G", "T"];
+
+    // 1. Gegen alle Ausrichtungen.
+    {
+      const z = wuerfel(20260818);
+      let faelle = 0, ungleich = 0, gezaehlt = 0, groesste = 0;
+      for (let lauf = 0; lauf < 120; lauf++) {
+        const a = zufallsfolge(z, 3 + Math.floor(z() * 4), ACGT);
+        const b = zufallsfolge(z, 3 + Math.floor(z() * 4), ACGT);
+        const punkte = { treffer: 2, fehl: -1, luecke: -2 };
+        const erg = rechnen(a, b, punkte, false);
+        const alle = besteDurchAufzaehlen(a, b, punkte);
+        faelle++; gezaehlt += alle.gezaehlt;
+        groesste = Math.max(groesste, alle.gezaehlt);
+        if (Math.abs(erg.punktzahl - alle.bestes) > 1e-9) ungleich++;
+      }
+      zeile("die Matrix findet wirklich das Beste", ungleich === 0,
+        `${faelle} Folgenpaare · <b>${gezaehlt.toLocaleString("de-AT")} Ausrichtungen einzeln ` +
+        `aufgezählt</b> (bis ${groesste.toLocaleString("de-AT")} für ein einzelnes Paar) · ` +
+        (ungleich === 0 ? "kein Unterschied zur Matrix" : `${ungleich} Abweichungen`));
+    }
+
+    // 2. Der Rückweg erzeugt genau die versprochene Punktzahl.
+    {
+      const z = wuerfel(4711);
+      let faelle = 0, ungleich = 0;
+      for (let lauf = 0; lauf < 400; lauf++) {
+        const a = zufallsfolge(z, 4 + Math.floor(z() * 14), ACGT);
+        const b = zufallsfolge(z, 4 + Math.floor(z() * 14), ACGT);
+        const punkte = { treffer: 1 + Math.floor(z() * 3), fehl: -1 - Math.floor(z() * 3), luecke: -1 - Math.floor(z() * 3) };
+        const erg = rechnen(a, b, punkte, false);
+        const rw = rueckweg(a, b, erg, false);
+        faelle++;
+        if (Math.abs(nachrechnen(rw.links, rw.rechts, punkte) - erg.punktzahl) > 1e-9) ungleich++;
+      }
+      zeile("der Rückweg stimmt mit der Matrix überein", ungleich === 0,
+        `${faelle} Ausrichtungen ausgeschrieben und Spalte für Spalte nachgerechnet · ` +
+        (ungleich === 0 ? "keine Abweichung" : `${ungleich} Abweichungen`));
+    }
+
+    // 3. Symmetrie und Selbstvergleich.
+    {
+      const z = wuerfel(99991);
+      let faelle = 0, unsymmetrisch = 0, selbstFalsch = 0;
+      for (let lauf = 0; lauf < 400; lauf++) {
+        const a = zufallsfolge(z, 3 + Math.floor(z() * 12), ACGT);
+        const b = zufallsfolge(z, 3 + Math.floor(z() * 12), ACGT);
+        const punkte = { treffer: 2, fehl: -1, luecke: -2 };
+        faelle++;
+        if (rechnen(a, b, punkte, false).punktzahl !== rechnen(b, a, punkte, false).punktzahl) unsymmetrisch++;
+        if (rechnen(a, a, punkte, false).punktzahl !== a.length * punkte.treffer) selbstFalsch++;
+      }
+      zeile("symmetrisch, und mit sich selbst maximal", unsymmetrisch === 0 && selbstFalsch === 0,
+        `${faelle} Paare: A gegen B ist so viel wert wie B gegen A · A mit sich selbst ergibt ` +
+        `immer genau Länge × Trefferpunkte`);
+    }
+
+    // 4. Zwei Rechenwege für den Änderungsabstand.
+    {
+      const z = wuerfel(31337);
+      let faelle = 0, ungleich = 0;
+      for (let lauf = 0; lauf < 500; lauf++) {
+        const a = zufallsfolge(z, 2 + Math.floor(z() * 12), ACGT);
+        const b = zufallsfolge(z, 2 + Math.floor(z() * 12), ACGT);
+        // Punkte so gewählt, dass die Matrix genau den Änderungsabstand misst
+        const erg = rechnen(a, b, { treffer: 0, fehl: -1, luecke: -1 }, false);
+        faelle++;
+        if (-erg.punktzahl !== aenderungsabstand(a, b)) ungleich++;
+      }
+      zeile("Matrix und Änderungsabstand sagen dasselbe", ungleich === 0,
+        `${faelle} Paare · die Matrix mit Kosten 0/−1/−1 ergibt genau den negativen ` +
+        `Levenshtein-Abstand, der auf einem eigenen Weg gerechnet wird`);
+    }
+
+    // 5. Dreiecksungleichung — erschöpfend über kurze Folgen.
+    {
+      const alphabet = ["A", "C"];
+      const alle = [];
+      for (let laenge = 0; laenge <= 4; laenge++) {
+        const zahl = Math.pow(alphabet.length, laenge);
+        for (let k = 0; k < zahl; k++) {
+          const f = [];
+          let rest = k;
+          for (let i = 0; i < laenge; i++) { f.push(alphabet[rest % alphabet.length]); rest = Math.floor(rest / alphabet.length); }
+          alle.push(f);
+        }
+      }
+      let tripel = 0, verletzt = 0;
+      for (const x of alle) for (const y of alle) for (const w of alle) {
+        tripel++;
+        if (aenderungsabstand(x, w) > aenderungsabstand(x, y) + aenderungsabstand(y, w)) verletzt++;
+      }
+      zeile("Dreiecksungleichung hält", verletzt === 0,
+        `alle <b>${tripel.toLocaleString("de-AT")} Tripel</b> aus Folgen bis Länge 4 über zwei ` +
+        `Zeichen · ${verletzt} Verletzungen — der Änderungsabstand ist also ein echtes Maß`);
+    }
+
+    // 6. Stückweise: gegen alle Teilstück-Paare.
+    {
+      const z = wuerfel(2024);
+      let faelle = 0, ungleich = 0, verglichen = 0;
+      const punkte = { treffer: 2, fehl: -1, luecke: -2 };
+      for (let lauf = 0; lauf < 60; lauf++) {
+        const a = zufallsfolge(z, 4 + Math.floor(z() * 4), ACGT);
+        const b = zufallsfolge(z, 4 + Math.floor(z() * 4), ACGT);
+        const lokal = rechnen(a, b, punkte, true).punktzahl;
+        // stumpf: jedes Teilstück gegen jedes, durchgehend gerechnet
+        let bestes = 0;
+        for (let i1 = 0; i1 < a.length; i1++) for (let i2 = i1 + 1; i2 <= a.length; i2++)
+          for (let j1 = 0; j1 < b.length; j1++) for (let j2 = j1 + 1; j2 <= b.length; j2++) {
+            verglichen++;
+            const s = rechnen(a.slice(i1, i2), b.slice(j1, j2), punkte, false).punktzahl;
+            if (s > bestes) bestes = s;
+          }
+        faelle++;
+        if (Math.abs(lokal - bestes) > 1e-9) ungleich++;
+      }
+      zeile("stückweise findet wirklich das beste Stück", ungleich === 0,
+        `${faelle} Paare · <b>${verglichen.toLocaleString("de-AT")} Teilstück-Paare</b> stumpf ` +
+        `durchgerechnet · ${ungleich === 0 ? "immer derselbe Wert" : ungleich + " Abweichungen"}`);
+    }
+
+    // 7. Höhere Lückenstrafe kann die Punktzahl nie erhöhen.
+    {
+      const z = wuerfel(13579);
+      let faelle = 0, verletzt = 0;
+      for (let lauf = 0; lauf < 300; lauf++) {
+        const a = zufallsfolge(z, 4 + Math.floor(z() * 10), ACGT);
+        const b = zufallsfolge(z, 4 + Math.floor(z() * 10), ACGT);
+        let vorher = Infinity;
+        for (const luecke of [-1, -2, -3, -4, -5]) {
+          const s = rechnen(a, b, { treffer: 2, fehl: -1, luecke }, false).punktzahl;
+          faelle++;
+          if (s > vorher + 1e-9) verletzt++;
+          vorher = s;
+        }
+      }
+      zeile("teurere Lücken senken die Punktzahl", verletzt === 0,
+        `${faelle.toLocaleString("de-AT")} Läufe über fünf Lückenstrafen · ${verletzt} Ausreißer — ` +
+        `wer Lücken teurer macht, bekommt nie ein besseres Ergebnis`);
+    }
+
+    const dauer = performance.now() - t0;
+    $("pruef-fuss").innerHTML = fehler === 0
+      ? `<b>Alle Prüfungen bestanden</b> in ${dauer.toFixed(0)} ms. Die erste und die sechste Zeile ` +
+        `sind die eigentlichen: dort steht die Matrix gegen stumpfes Durchprobieren — einmal über ` +
+        `alle Ausrichtungen, einmal über alle Teilstücke.`
+      : `<b style="color:var(--warn)">${fehler} Prüfung(en) fehlgeschlagen.</b>`;
+  }
+
+  /* ==========================================================================
+     BEDIENUNG
+     ========================================================================== */
+  {
+    const w = $("beispiel");
+    for (const [k, b] of Object.entries(BEISPIELE)) {
+      const o = document.createElement("option");
+      o.value = k; o.textContent = b.name;
+      w.append(o);
+    }
+    w.value = BEISPIEL;
+    w.addEventListener("change", () => {
+      BEISPIEL = w.value;
+      $("folge-a").value = BEISPIELE[BEISPIEL].a;
+      $("folge-b").value = BEISPIELE[BEISPIEL].b;
+      alles();
+    });
+  }
+  let tippUhr = null;
+  for (const id of ["folge-a", "folge-b"]) {
+    $(id).addEventListener("input", () => { clearTimeout(tippUhr); tippUhr = setTimeout(alles, 200); });
+  }
+  for (const id of ["art", "treffer", "fehl", "luecke"]) $(id).addEventListener("input", alles);
+  $("art").addEventListener("change", alles);
+  $("b-pruefen").addEventListener("click", pruefen);
+  $("b-thema").addEventListener("click", () => {
+    const jetzt = document.documentElement.getAttribute("data-theme");
+    const dunkel = matchMedia("(prefers-color-scheme: dark)").matches;
+    document.documentElement.setAttribute("data-theme", jetzt ? (jetzt === "dark" ? "light" : "dark") : (dunkel ? "light" : "dark"));
+    alles();
+  });
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", alles);
+
+  $("folge-a").value = BEISPIELE[BEISPIEL].a;
+  $("folge-b").value = BEISPIELE[BEISPIEL].b;
+  alles();
+})();
+</script>
+</body>
+</html>
